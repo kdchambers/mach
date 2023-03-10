@@ -31,11 +31,11 @@ const core = @import("libs/core/sdk.zig").Sdk(.{
     .sysjs = sysjs,
 });
 
-pub fn module(b: *std.Build) *std.build.Module {
+pub fn module(b: *std.Build, target: std.zig.CrossTarget) *std.build.Module {
     return b.createModule(.{
         .source_file = .{ .path = sdkPath("/src/main.zig") },
         .dependencies = &.{
-            .{ .name = "core", .module = core.module(b) },
+            .{ .name = "core", .module = core.module(b, target) },
             .{ .name = "ecs", .module = ecs.module(b) },
             .{ .name = "sysaudio", .module = sysaudio.module(b) },
             .{ .name = "earcut", .module = earcut.module(b) },
@@ -121,7 +121,7 @@ fn testStep(b: *std.Build, optimize: std.builtin.OptimizeMode, target: std.zig.C
         .target = target,
         .optimize = optimize,
     });
-    var iter = module(b).dependencies.iterator();
+    var iter = module(b, target).dependencies.iterator();
     while (iter.next()) |e| {
         main_tests.addModule(e.key_ptr.*, e.value_ptr.*);
     }
@@ -130,18 +130,32 @@ fn testStep(b: *std.Build, optimize: std.builtin.OptimizeMode, target: std.zig.C
 }
 
 pub const App = struct {
+    const web_install_dir = std.build.InstallDir{ .custom = "www" };
+
+    pub const InitError = error{OutOfMemory} || std.zig.system.NativeTargetInfo.DetectError;
+    pub const LinkError = glfw.LinkError;
+    pub const RunError = error{
+        ParsingIpFailed,
+    } || wasmserve.Error || std.fmt.ParseIntError;
+
+    pub const Platform = enum {
+        native,
+        web,
+
+        pub fn fromTarget(target: std.Target) Platform {
+            if (target.cpu.arch == .wasm32) return .web;
+            return .native;
+        }
+    };
+
     b: *std.Build,
     name: []const u8,
     step: *std.build.CompileStep,
-    platform: core.App.Platform,
-
-    core: core.App,
+    platform: Platform,
+    res_dirs: ?[]const []const u8,
+    watch_paths: ?[]const []const u8,
     use_freetype: ?[]const u8 = null,
     use_model3d: bool = false,
-
-    pub const InitError = core.App.InitError;
-    pub const LinkError = core.App.LinkError;
-    pub const RunError = core.App.RunError;
 
     pub fn init(
         b: *std.Build,
@@ -160,34 +174,71 @@ pub const App = struct {
             use_model3d: bool = false,
         },
     ) InitError!App {
+        const target = (try std.zig.system.NativeTargetInfo.detect(options.target)).target;
+        const platform = Platform.fromTarget(target);
+
         var deps = std.ArrayList(std.build.ModuleDependency).init(b.allocator);
         if (options.deps) |v| try deps.appendSlice(v);
-        try deps.append(.{ .name = "mach", .module = module(b) });
+        try deps.append(.{ .name = "mach", .module = module(b, options.target) });
+        try deps.append(.{ .name = "gpu", .module = gpu.module(b) });
         try deps.append(.{ .name = "sysaudio", .module = sysaudio.module(b) });
+
+        if (platform == .web)
+            try deps.append(.{ .name = "sysjs", .module = sysjs.module(b) });
+
         if (options.use_freetype) |_| try deps.append(.{ .name = "freetype", .module = freetype.module(b) });
 
-        const app = try core.App.init(b, .{
+        const app_module = b.createModule(.{
+            .source_file = .{ .path = options.src },
+            .dependencies = try deps.toOwnedSlice(),
+        });
+
+        const step = blk: {
+            if (platform == .web) {
+                const lib = b.addSharedLibrary(.{
+                    .name = options.name,
+                    .root_source_file = .{ .path = sdkPath("/src/platform/wasm/entry.zig") },
+                    .target = options.target,
+                    .optimize = options.optimize,
+                });
+                lib.rdynamic = true;
+                lib.addModule("sysjs", sysjs.module(b));
+                break :blk lib;
+            } else {
+                const exe = b.addExecutable(.{
+                    .name = options.name,
+                    .root_source_file = .{ .path = sdkPath("/src/platform/native/entry.zig") },
+                    .target = options.target,
+                    .optimize = options.optimize,
+                });
+                break :blk exe;
+            }
+        };
+
+        step.main_pkg_path = sdkPath("/src");
+        step.addModule("gpu", gpu.module(b));
+        step.addModule("app", app_module);
+
+        return .{
+            .b = b,
             .name = options.name,
-            .src = options.src,
-            .target = options.target,
-            .optimize = options.optimize,
-            .deps = deps.items,
+            .step = step,
+            .platform = platform,
             .res_dirs = options.res_dirs,
             .watch_paths = options.watch_paths,
-        });
-        return .{
-            .core = app,
-            .b = app.b,
-            .name = app.name,
-            .step = app.step,
-            .platform = app.platform,
             .use_freetype = options.use_freetype,
             .use_model3d = options.use_model3d,
         };
     }
 
     pub fn link(app: *const App, options: Options) LinkError!void {
-        try app.core.link(options.core);
+        if (app.platform != .web) {
+            try glfw.link(app.b, app.step, options.core.glfw_options);
+            gpu.link(app.b, app.step, options.core.gpuOptions()) catch return error.FailedToLinkGPU;
+            if (app.step.target.isLinux())
+                gamemode.link(app.step);
+        }
+
         sysaudio.link(app.b, app.step, options.sysaudio);
         if (app.use_freetype) |_| freetype.link(app.b, app.step, options.freetype);
         if (app.use_model3d) {
@@ -196,15 +247,69 @@ pub const App = struct {
     }
 
     pub fn install(app: *const App) void {
-        app.core.install();
+        app.step.install();
+
+        // Install additional files (src/mach.js and template.html)
+        // in case of wasm
+        if (app.platform == .web) {
+            // Set install directory to '{prefix}/www'
+            app.getInstallStep().?.dest_dir = web_install_dir;
+
+            inline for (.{ "/src/platform/wasm/mach.js", "/libs/sysjs/src/mach-sysjs.js" }) |js| {
+                const install_js = app.b.addInstallFileWithDir(
+                    .{ .path = sdkPath(js) },
+                    web_install_dir,
+                    std.fs.path.basename(js),
+                );
+                app.getInstallStep().?.step.dependOn(&install_js.step);
+            }
+
+            const html_generator = app.b.addExecutable(.{
+                .name = "html-generator",
+                .root_source_file = .{ .path = sdkPath("/tools/html-generator/main.zig") },
+            });
+            const run_html_generator = html_generator.run();
+            run_html_generator.addArgs(&.{ "index.html", app.name });
+
+            run_html_generator.cwd = app.b.getInstallPath(web_install_dir, "");
+            app.getInstallStep().?.step.dependOn(&run_html_generator.step);
+        }
+
+        // Install resources
+        if (app.res_dirs) |res_dirs| {
+            for (res_dirs) |res| {
+                const install_res = app.b.addInstallDirectory(.{
+                    .source_dir = res,
+                    .install_dir = app.getInstallStep().?.dest_dir,
+                    .install_subdir = std.fs.path.basename(res),
+                    .exclude_extensions = &.{},
+                });
+                app.getInstallStep().?.step.dependOn(&install_res.step);
+            }
+        }
     }
 
     pub fn run(app: *const App) RunError!*std.build.Step {
-        return try app.core.run();
+        if (app.platform == .web) {
+            const address = std.process.getEnvVarOwned(app.b.allocator, "MACH_ADDRESS") catch try app.b.allocator.dupe(u8, "127.0.0.1");
+            const port = std.process.getEnvVarOwned(app.b.allocator, "MACH_PORT") catch try app.b.allocator.dupe(u8, "8080");
+            const address_parsed = std.net.Address.parseIp4(address, try std.fmt.parseInt(u16, port, 10)) catch return error.ParsingIpFailed;
+            const serve_step = try wasmserve.serve(
+                app.step,
+                .{
+                    .install_dir = web_install_dir,
+                    .watch_paths = app.watch_paths,
+                    .listen_address = address_parsed,
+                },
+            );
+            return &serve_step.step;
+        } else {
+            return &app.step.run().step;
+        }
     }
 
     pub fn getInstallStep(app: *const App) ?*std.build.InstallArtifactStep {
-        return app.core.getInstallStep();
+        return app.step.install_step;
     }
 };
 

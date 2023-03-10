@@ -1,7 +1,6 @@
 const std = @import("std");
 const gpu = @import("gpu");
 const App = @import("app").App;
-const util = @import("util.zig");
 
 pub const GPUInterface = gpu.dawn.Interface;
 pub const scope_levels = if (@hasDecl(App, "scope_levels")) App.scope_levels else [0]std.log.ScopeLevel{};
@@ -16,8 +15,8 @@ pub fn main() !void {
     defer app.deinit();
 
     while (true) {
-        const pool = try util.AutoReleasePool.init();
-        defer util.AutoReleasePool.release(pool);
+        // const pool = try AutoReleasePool.init();
+        // defer AutoReleasePool.release(pool);
         if (try app.update()) return;
     }
 }

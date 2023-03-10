@@ -37,25 +37,25 @@ pub const EventIterator = struct {
             .key_press, .key_repeat => blk: {
                 const key = @intToEnum(Key, js.machEventShift());
                 switch (key) {
-                    .left_shift, .right_shift => self.last_key_mods.shift = true,
-                    .left_control, .right_control => self.last_key_mods.control = true,
-                    .left_alt, .right_alt => self.last_key_mods.alt = true,
-                    .left_super, .right_super => self.last_key_mods.super = true,
-                    .caps_lock => self.last_key_mods.caps_lock = true,
-                    .num_lock => self.last_key_mods.num_lock = true,
+                    .left_shift, .right_shift => self.core.last_key_mods.shift = true,
+                    .left_control, .right_control => self.core.last_key_mods.control = true,
+                    .left_alt, .right_alt => self.core.last_key_mods.alt = true,
+                    .left_super, .right_super => self.core.last_key_mods.super = true,
+                    .caps_lock => self.core.last_key_mods.caps_lock = true,
+                    .num_lock => self.core.last_key_mods.num_lock = true,
                     else => {},
                 }
                 break :blk switch (event_type) {
                     .key_press => Event{
                         .key_press = .{
                             .key = key,
-                            .mods = self.last_key_mods,
+                            .mods = self.core.last_key_mods,
                         },
                     },
                     .key_repeat => Event{
                         .key_repeat = .{
                             .key = key,
-                            .mods = self.last_key_mods,
+                            .mods = self.core.last_key_mods,
                         },
                     },
                     else => unreachable,
@@ -64,25 +64,25 @@ pub const EventIterator = struct {
             .key_release => blk: {
                 const key = @intToEnum(Key, js.machEventShift());
                 switch (key) {
-                    .left_shift, .right_shift => self.last_key_mods.shift = false,
-                    .left_control, .right_control => self.last_key_mods.control = false,
-                    .left_alt, .right_alt => self.last_key_mods.alt = false,
-                    .left_super, .right_super => self.last_key_mods.super = false,
-                    .caps_lock => self.last_key_mods.caps_lock = false,
-                    .num_lock => self.last_key_mods.num_lock = false,
+                    .left_shift, .right_shift => self.core.last_key_mods.shift = false,
+                    .left_control, .right_control => self.core.last_key_mods.control = false,
+                    .left_alt, .right_alt => self.core.last_key_mods.alt = false,
+                    .left_super, .right_super => self.core.last_key_mods.super = false,
+                    .caps_lock => self.core.last_key_mods.caps_lock = false,
+                    .num_lock => self.core.last_key_mods.num_lock = false,
                     else => {},
                 }
                 break :blk Event{
                     .key_release = .{
                         .key = key,
-                        .mods = self.last_key_mods,
+                        .mods = self.core.last_key_mods,
                     },
                 };
             },
             .mouse_motion => blk: {
                 const x = @intToFloat(f64, js.machEventShift());
                 const y = @intToFloat(f64, js.machEventShift());
-                self.last_cursor_position = .{
+                self.core.last_cursor_position = .{
                     .x = x,
                     .y = y,
                 };
@@ -98,15 +98,15 @@ pub const EventIterator = struct {
             .mouse_press => Event{
                 .mouse_press = .{
                     .button = toMachButton(js.machEventShift()),
-                    .pos = self.last_cursor_position,
-                    .mods = self.last_key_mods,
+                    .pos = self.core.last_cursor_position,
+                    .mods = self.core.last_key_mods,
                 },
             },
             .mouse_release => Event{
                 .mouse_release = .{
                     .button = toMachButton(js.machEventShift()),
-                    .pos = self.last_cursor_position,
-                    .mods = self.last_key_mods,
+                    .pos = self.core.last_cursor_position,
+                    .mods = self.core.last_key_mods,
                 },
             },
             .mouse_scroll => Event{

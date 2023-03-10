@@ -2,6 +2,8 @@ const std = @import("std");
 
 pub fn Sdk(comptime deps: anytype) type {
     return struct {
+        var cached_module: ?*std.build.Module = null;
+
         pub fn testStep(b: *std.Build, optimize: std.builtin.OptimizeMode, target: std.zig.CrossTarget, options: Options) !*std.build.RunStep {
             const main_tests = b.addTest(.{
                 .name = "gpu-tests",
@@ -20,9 +22,12 @@ pub fn Sdk(comptime deps: anytype) type {
         };
 
         pub fn module(b: *std.Build) *std.build.Module {
-            return b.createModule(.{
-                .source_file = .{ .path = sdkPath("/src/main.zig") },
-            });
+            if (cached_module == null) {
+                cached_module = b.createModule(.{
+                    .source_file = .{ .path = sdkPath("/src/main.zig") },
+                });
+            }
+            return cached_module.?;
         }
 
         pub fn link(b: *std.Build, step: *std.build.CompileStep, options: Options) !void {

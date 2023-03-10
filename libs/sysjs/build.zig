@@ -18,10 +18,15 @@ pub fn testStep(b: *std.Build, optimize: std.builtin.OptimizeMode, target: std.z
     return main_tests.run();
 }
 
+var cached_module: ?*std.build.Module = null;
+
 pub fn module(b: *std.Build) *std.build.Module {
-    return b.createModule(.{
-        .source_file = .{ .path = sdkPath("/src/main.zig") },
-    });
+    if (cached_module == null) {
+        cached_module = b.createModule(.{
+            .source_file = .{ .path = sdkPath("/src/main.zig") },
+        });
+    }
+    return cached_module.?;
 }
 
 fn sdkPath(comptime suffix: []const u8) []const u8 {
